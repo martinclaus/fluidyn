@@ -192,7 +192,7 @@ mod grid {
     use crate::field::Field;
     use crate::mask::Mask;
     use crate::traits::Numeric;
-    use crate::Size2D;
+    use crate::{cyclic_shift, Ix2, Size2D};
 
     pub trait Grid<I, M>
     where
@@ -239,38 +239,35 @@ mod grid {
 
         fn cartesian(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self;
 
-        fn is_v_inside(
-            pos: Size2D,
-            center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
-        ) -> bool {
-            center_mask[[pos.0, pos.1]].is_inside() && center_mask[[pos.0, pos.1 + 1]].is_inside()
+        fn is_v_inside(pos: Ix2, center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer) -> bool {
+            let jp1 = cyclic_shift(pos[0], 1, center_mask.size().0);
+            center_mask[pos].is_inside() && center_mask[[jp1, pos[1]]].is_inside()
         }
-        fn is_h_inside(
-            pos: Size2D,
-            center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
-        ) -> bool {
-            center_mask[[pos.0, pos.1]].is_inside()
-                && center_mask[[pos.0 + 1, pos.1 + 1]].is_inside()
+        fn is_h_inside(pos: Ix2, center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer) -> bool {
+            let ip1 = cyclic_shift(pos[1], 1, center_mask.size().1);
+            center_mask[pos].is_inside() && center_mask[[pos[0], ip1]].is_inside()
         }
         fn is_corner_inside(
-            pos: Size2D,
+            pos: Ix2,
             center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
         ) -> bool {
-            center_mask[[pos.0, pos.1]].is_inside()
-                && center_mask[[pos.0, pos.1 + 1]].is_inside()
-                && center_mask[[pos.0 + 1, pos.1 + 1]].is_inside()
-                && center_mask[[pos.0 + 1, pos.1]].is_inside()
+            let ip1 = cyclic_shift(pos[1], 1, center_mask.size().1);
+            let jp1 = cyclic_shift(pos[0], 1, center_mask.size().0);
+            center_mask[pos].is_inside()
+                && center_mask[[pos[0], ip1]].is_inside()
+                && center_mask[[jp1, ip1]].is_inside()
+                && center_mask[[jp1, pos[1]]].is_inside()
         }
 
         fn make_mask(
             base_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
-            is_inside_strategy: fn(Size2D, &<Self::Grid as Grid<I, M>>::MaskContainer) -> bool,
+            is_inside_strategy: fn(Ix2, &<Self::Grid as Grid<I, M>>::MaskContainer) -> bool,
         ) -> <Self::Grid as Grid<I, M>>::MaskContainer {
             let mut mask =
                 <Self::Grid as Grid<I, M>>::MaskContainer::full(M::inside(), base_mask.size());
             for j in 0..base_mask.size().0 {
                 for i in 0..base_mask.size().1 {
-                    mask[[j, i]] = match is_inside_strategy((j, i), base_mask) {
+                    mask[[j, i]] = match is_inside_strategy([j, i], base_mask) {
                         true => M::inside(),
                         false => M::outside(),
                     };
@@ -299,45 +296,40 @@ mod grid {
         type MaskContainer = CM;
 
         fn cartesian_owned(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self {
-            let x = {
-                let mut res = CD::full(I::zero(), size);
-                (0..size.0).for_each(|j| {
-                    (0..size.1).for_each(|i| {
-                        res[[j, i]] = x_start + dx * (i as f64);
-                    })
-                });
-                res
-            };
-
-            let y = {
-                let mut res = CD::full(I::zero(), size);
-                (0..size.0).for_each(|j| {
-                    (0..size.1).for_each(|i| {
-                        res[[j, i]] = y_start + dy * (j as f64);
-                    })
-                });
-                res
-            };
-
-            let mask = {
-                let mut res = CM::full(M::inside(), size);
-                (0..size.0).for_each(|j| {
-                    (0..size.1).for_each(|i| {
-                        res[[j, i]] =
-                            match (j == 0) | (j == size.0 - 1) | (i == 0) | (i == size.1 - 1) {
-                                true => M::outside(),
-                                false => M::inside(),
-                            };
-                    })
-                });
-                res
-            };
             Grid2D {
-                x,
-                y,
+                x: {
+                    let mut res = CD::full(I::zero(), size);
+                    (0..size.0).for_each(|j| {
+                        (0..size.1).for_each(|i| {
+                            res[[j, i]] = x_start + dx * (i as f64);
+                        })
+                    });
+                    res
+                },
+                y: {
+                    let mut res = CD::full(I::zero(), size);
+                    (0..size.0).for_each(|j| {
+                        (0..size.1).for_each(|i| {
+                            res[[j, i]] = y_start + dy * (j as f64);
+                        })
+                    });
+                    res
+                },
                 dx: CD::full(dx, size),
                 dy: CD::full(dy, size),
-                mask,
+                mask: {
+                    let mut res = CM::full(M::inside(), size);
+                    (0..size.0).for_each(|j| {
+                        (0..size.1).for_each(|i| {
+                            res[[j, i]] =
+                                match (j == 1) | (j == size.0 - 1) | (i == 0) | (i == size.1 - 1) {
+                                    true => M::outside(),
+                                    false => M::inside(),
+                                };
+                        })
+                    });
+                    res
+                },
             }
         }
 
@@ -533,12 +525,13 @@ pub mod rhs {
             for i in 0..nx {
                 if mask_u[[j, i]].is_outside() {
                     d[[j, i]] = I::zero();
+                } else {
+                    ip1 = cyclic_shift(i, 1, nx);
+                    d[[j, i]] = (eta_data[[j, ip1]] * Into::<I>::into(mask_eta[[j, ip1]])
+                        - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
+                        / dx[[j, i]]
+                        * (-p.g);
                 }
-                ip1 = cyclic_shift(i, 1, nx);
-                d[[j, i]] = (eta_data[[j, ip1]] * Into::<I>::into(mask_eta[[j, ip1]])
-                    - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
-                    / dx[[j, i]]
-                    * (-p.g);
             }
         }
 
@@ -563,12 +556,13 @@ pub mod rhs {
             jp1 = cyclic_shift(j, 1, ny);
             for i in 0..nx {
                 if mask_v[[j, i]].is_outside() {
-                    continue;
+                    d[[j, i]] = I::zero();
+                } else {
+                    d[[j, i]] = (eta_data[[jp1, i]] * Into::<I>::into(mask_eta[[jp1, i]])
+                        - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
+                        / dy[[j, i]]
+                        * (-p.g);
                 }
-                d[[j, i]] = (eta_data[[jp1, i]] * Into::<I>::into(mask_eta[[jp1, i]])
-                    - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
-                    / dy[[j, i]]
-                    * (-p.g);
             }
         }
         res
@@ -597,16 +591,17 @@ pub mod rhs {
             jm1 = cyclic_shift(j, -1, ny);
             for i in 0..nx {
                 if mask_eta[[j, i]].is_outside() {
-                    continue;
+                    d[[j, i]] = I::zero();
+                } else {
+                    im1 = cyclic_shift(i, -1, nx);
+                    d[[j, i]] = ((Into::<I>::into(mask_u[[j, i]]) * ud[[j, i]]
+                        - Into::<I>::into(mask_u[[j, im1]]) * ud[[j, im1]])
+                        / dx[[j, i]]
+                        + (Into::<I>::into(mask_v[[j, i]]) * vd[[j, i]]
+                            - Into::<I>::into(mask_v[[jm1, i]]) * vd[[jm1, i]])
+                            / dy[[j, i]])
+                        * (-p.h)
                 }
-                im1 = cyclic_shift(i, -1, nx);
-                d[[j, i]] = ((Into::<I>::into(mask_u[[j, i]]) * ud[[j, i]]
-                    - Into::<I>::into(mask_u[[j, im1]]) * ud[[j, im1]])
-                    / dx[[j, i]]
-                    + (Into::<I>::into(mask_v[[j, i]]) * vd[[j, i]]
-                        - Into::<I>::into(mask_v[[jm1, i]]) * vd[[jm1, i]])
-                        / dy[[j, i]])
-                    * (-p.h)
             }
         }
         res
@@ -714,7 +709,7 @@ mod state {
 }
 
 #[cfg(test)]
-mod tests {
+mod benchmark {
     use std::{error::Error, io::Write, rc::Rc};
 
     use crate::{
@@ -852,6 +847,12 @@ mod tests {
         println!("Time: {:?}", t.as_secs_f64());
 
         if let Err(err) = write_to_file("eta.csv", eta.get_data()) {
+            eprintln!("{}", err);
+        }
+        if let Err(err) = write_to_file("u.csv", u.get_data()) {
+            eprintln!("{}", err);
+        }
+        if let Err(err) = write_to_file("v.csv", v.get_data()) {
             eprintln!("{}", err);
         }
     }
