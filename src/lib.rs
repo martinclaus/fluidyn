@@ -857,3 +857,6 @@ mod benchmark {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
