@@ -57,8 +57,6 @@ mod field {
     {
         fn full(item: I, size: Size2D) -> Self;
         fn size(&self) -> Size2D;
-        fn at(&self, idx: [usize; 2]) -> &I;
-        fn at_mut(&mut self, idx: [usize; 2]) -> &mut I;
     }
     pub struct Arr2D<I> {
         size: (usize, usize),
@@ -127,16 +125,6 @@ mod field {
 
         fn size(&self) -> Size2D {
             self.size
-        }
-
-        #[inline]
-        fn at(&self, idx: [usize; 2]) -> &I {
-            &self[idx]
-        }
-
-        #[inline]
-        fn at_mut(&mut self, idx: [usize; 2]) -> &mut I {
-            &mut self[idx]
         }
     }
 }
@@ -255,24 +243,23 @@ mod grid {
             pos: Size2D,
             center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
         ) -> bool {
-            center_mask[[pos.0, pos.1]].is_inside()
-                && center_mask.at([pos.0, pos.1 + 1]).is_inside()
+            center_mask[[pos.0, pos.1]].is_inside() && center_mask[[pos.0, pos.1 + 1]].is_inside()
         }
         fn is_h_inside(
             pos: Size2D,
             center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
         ) -> bool {
-            center_mask.at([pos.0, pos.1]).is_inside()
-                && center_mask.at([pos.0 + 1, pos.1 + 1]).is_inside()
+            center_mask[[pos.0, pos.1]].is_inside()
+                && center_mask[[pos.0 + 1, pos.1 + 1]].is_inside()
         }
         fn is_corner_inside(
             pos: Size2D,
             center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
         ) -> bool {
-            center_mask.at([pos.0, pos.1]).is_inside()
-                && center_mask.at([pos.0, pos.1 + 1]).is_inside()
-                && center_mask.at([pos.0 + 1, pos.1 + 1]).is_inside()
-                && center_mask.at([pos.0 + 1, pos.1]).is_inside()
+            center_mask[[pos.0, pos.1]].is_inside()
+                && center_mask[[pos.0, pos.1 + 1]].is_inside()
+                && center_mask[[pos.0 + 1, pos.1 + 1]].is_inside()
+                && center_mask[[pos.0 + 1, pos.1]].is_inside()
         }
 
         fn make_mask(
@@ -283,7 +270,7 @@ mod grid {
                 <Self::Grid as Grid<I, M>>::MaskContainer::full(M::inside(), base_mask.size());
             for j in 0..base_mask.size().0 {
                 for i in 0..base_mask.size().1 {
-                    *mask.at_mut([j, i]) = match is_inside_strategy((j, i), base_mask) {
+                    mask[[j, i]] = match is_inside_strategy((j, i), base_mask) {
                         true => M::inside(),
                         false => M::outside(),
                     };
@@ -316,7 +303,7 @@ mod grid {
                 let mut res = CD::full(I::zero(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
-                        *res.at_mut([j, i]) = x_start + dx * (i as f64);
+                        res[[j, i]] = x_start + dx * (i as f64);
                     })
                 });
                 res
@@ -326,7 +313,7 @@ mod grid {
                 let mut res = CD::full(I::zero(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
-                        *res.at_mut([j, i]) = y_start + dy * (j as f64);
+                        res[[j, i]] = y_start + dy * (j as f64);
                     })
                 });
                 res
@@ -336,7 +323,7 @@ mod grid {
                 let mut res = CM::full(M::inside(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
-                        *res.at_mut([j, i]) =
+                        res[[j, i]] =
                             match (j == 0) | (j == size.0 - 1) | (i == 0) | (i == size.1 - 1) {
                                 true => M::outside(),
                                 false => M::inside(),
@@ -544,14 +531,13 @@ pub mod rhs {
         let mut ip1: usize;
         for j in 0..ny {
             for i in 0..nx {
-                if mask_u.at([j, i]).is_outside() {
-                    *d.at_mut([j, i]) = I::zero();
+                if mask_u[[j, i]].is_outside() {
+                    d[[j, i]] = I::zero();
                 }
                 ip1 = cyclic_shift(i, 1, nx);
-                *d.at_mut([j, i]) = (*eta_data.at([j, ip1])
-                    * Into::<I>::into(*mask_eta.at([j, ip1]))
-                    - *eta_data.at([j, i]) * Into::<I>::into(*mask_eta.at([j, i])))
-                    / *dx.at([j, i])
+                d[[j, i]] = (eta_data[[j, ip1]] * Into::<I>::into(mask_eta[[j, ip1]])
+                    - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
+                    / dx[[j, i]]
                     * (-p.g);
             }
         }
@@ -576,13 +562,12 @@ pub mod rhs {
         for j in 0..ny {
             jp1 = cyclic_shift(j, 1, ny);
             for i in 0..nx {
-                if mask_v.at([j, i]).is_outside() {
+                if mask_v[[j, i]].is_outside() {
                     continue;
                 }
-                *d.at_mut([j, i]) = (*eta_data.at([jp1, i])
-                    * Into::<I>::into(*mask_eta.at([jp1, i]))
-                    - *eta_data.at([j, i]) * Into::<I>::into(*mask_eta.at([j, i])))
-                    / *dy.at([j, i])
+                d[[j, i]] = (eta_data[[jp1, i]] * Into::<I>::into(mask_eta[[jp1, i]])
+                    - eta_data[[j, i]] * Into::<I>::into(mask_eta[[j, i]]))
+                    / dy[[j, i]]
                     * (-p.g);
             }
         }
@@ -611,16 +596,16 @@ pub mod rhs {
         for j in 0..ny {
             jm1 = cyclic_shift(j, -1, ny);
             for i in 0..nx {
-                if mask_eta.at([j, i]).is_outside() {
+                if mask_eta[[j, i]].is_outside() {
                     continue;
                 }
                 im1 = cyclic_shift(i, -1, nx);
-                *d.at_mut([j, i]) = ((Into::<I>::into(*mask_u.at([j, i])) * *ud.at([j, i])
-                    - Into::<I>::into(*mask_u.at([j, im1])) * *ud.at([j, im1]))
-                    / *dx.at([j, i])
-                    + (Into::<I>::into(*mask_v.at([j, i])) * *vd.at([j, i])
-                        - Into::<I>::into(*mask_v.at([jm1, i])) * *vd.at([jm1, i]))
-                        / *dy.at([j, i]))
+                d[[j, i]] = ((Into::<I>::into(mask_u[[j, i]]) * ud[[j, i]]
+                    - Into::<I>::into(mask_u[[j, im1]]) * ud[[j, im1]])
+                    / dx[[j, i]]
+                    + (Into::<I>::into(mask_v[[j, i]]) * vd[[j, i]]
+                        - Into::<I>::into(mask_v[[jm1, i]]) * vd[[jm1, i]])
+                        / dy[[j, i]])
                     * (-p.h)
             }
         }
@@ -650,7 +635,7 @@ pub mod integrate {
 
         for j in 0..ny {
             for i in 0..nx {
-                *d.at_mut([j, i]) = strategy(past_state, step, [j, i]);
+                d[[j, i]] = strategy(past_state, step, [j, i]);
             }
         }
         res
@@ -661,7 +646,7 @@ pub mod integrate {
         step: I,
         idx: [usize; 2],
     ) -> I {
-        *past_state[0].get_data().at(idx) * step
+        past_state[0].get_data()[idx] * step
     }
 
     pub fn ab2<V: Variable<I, M>, I: Numeric, M: Mask>(
@@ -672,8 +657,8 @@ pub mod integrate {
         if past_state.len() < 2 {
             ef(past_state, step, idx)
         } else {
-            (*past_state[0].get_data().at(idx) * AB2_FAC[0]
-                + *past_state[1].get_data().at(idx) * AB2_FAC[1])
+            (past_state[0].get_data()[idx] * AB2_FAC[0]
+                + past_state[1].get_data()[idx] * AB2_FAC[1])
                 * step
         }
     }
@@ -686,9 +671,9 @@ pub mod integrate {
         if past_state.len() < 3 {
             ab2(past_state, step, idx)
         } else {
-            (*past_state[0].get_data().at(idx) * AB3_FAC[0]
-                + *past_state[1].get_data().at(idx) * AB3_FAC[1]
-                + *past_state[2].get_data().at(idx) * AB3_FAC[2])
+            (past_state[0].get_data()[idx] * AB3_FAC[0]
+                + past_state[1].get_data()[idx] * AB3_FAC[1]
+                + past_state[2].get_data()[idx] * AB3_FAC[2])
                 * step
         }
     }
@@ -779,9 +764,9 @@ mod tests {
             let n = (x.size().0 * x.size().1) as f64;
             for j in 0..ny {
                 for i in 0..nx {
-                    ave_x += Into::<f64>::into(*x.at([j, i])) / n;
-                    ave_y += Into::<f64>::into(*y.at([j, i])) / n;
-                    ave_dx += Into::<f64>::into(*dx.at([j, i])) / n;
+                    ave_x += Into::<f64>::into(x[[j, i]]) / n;
+                    ave_y += Into::<f64>::into(y[[j, i]]) / n;
+                    ave_dx += Into::<f64>::into(dx[[j, i]]) / n;
                 }
             }
             (ave_x, ave_y, ave_dx)
@@ -792,11 +777,11 @@ mod tests {
         for j in 0..ny {
             for i in 0..nx {
                 idx = [j, i];
-                if grid_eta.get_mask().at(idx).is_outside() {
+                if grid_eta.get_mask()[idx].is_outside() {
                     continue;
                 }
-                *d.at_mut(idx) = ((-((Into::<f64>::into(*x.at(idx)) - x_mean).powi(2)
-                    + (Into::<f64>::into(*y.at(idx)) - y_mean).powi(2))
+                d[idx] = ((-((Into::<f64>::into(x[idx]) - x_mean).powi(2)
+                    + (Into::<f64>::into(y[idx]) - y_mean).powi(2))
                     / var)
                     .exp())
                 .into();
@@ -815,7 +800,7 @@ mod tests {
         let mut vec = Vec::<String>::with_capacity(data.size().0);
         for j in 0..data.size().0 {
             vec.truncate(0);
-            (0..data.size().1).for_each(|i| vec.push(data.at([j, i]).to_string()));
+            (0..data.size().1).for_each(|i| vec.push(data[[j, i]].to_string()));
             writeln!(file, "{}", vec.join(", ")).unwrap();
         }
         Ok(())
