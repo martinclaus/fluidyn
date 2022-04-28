@@ -20,7 +20,7 @@ mod traits {
 
     use std::ops::{Add, Div, Mul, Sub};
 
-    pub trait Numeric: Sized
+    pub trait Numeric: Copy
     where
         Self: Add<Output = Self>
             + Mul<Output = Self>
@@ -51,18 +51,14 @@ mod field {
 
     use crate::{Ix2, Size2D};
 
-    pub trait Field
+    pub trait Field<I>
     where
-        Self: Sized + Index<Ix2> + IndexMut<Ix2>,
+        Self: Sized + Index<Ix2, Output = I> + IndexMut<Ix2, Output = I>,
     {
-        type Item;
-        type Data;
-        fn full(item: Self::Item, size: Size2D) -> Self;
+        fn full(item: I, size: Size2D) -> Self;
         fn size(&self) -> Size2D;
-        fn data(&self) -> &Self::Data;
-        fn data_mut(&mut self) -> &mut Self::Data;
-        fn at(&self, idx: [usize; 2]) -> &Self::Item;
-        fn at_mut(&mut self, idx: [usize; 2]) -> &mut Self::Item;
+        fn at(&self, idx: [usize; 2]) -> &I;
+        fn at_mut(&mut self, idx: [usize; 2]) -> &mut I;
     }
     pub struct Arr2D<I> {
         size: (usize, usize),
@@ -71,13 +67,14 @@ mod field {
 
     impl<I> Index<[usize; 2]> for Arr2D<I> {
         type Output = I;
-
+        #[inline]
         fn index(&self, index: Ix2) -> &Self::Output {
             &self.data[self.size.1 * index[0] + index[1]]
         }
     }
 
     impl<I> IndexMut<Ix2> for Arr2D<I> {
+        #[inline]
         fn index_mut(&mut self, index: [usize; 2]) -> &mut Self::Output {
             &mut self.data[self.size.1 * index[0] + index[1]]
         }
@@ -88,7 +85,6 @@ mod field {
 
         fn add(self, rhs: Self) -> Self::Output {
             assert_eq!(self.size, rhs.size);
-            // let mut data = Vec::with_capacity(self.size.0 * self.size.1);
             let data: Box<[I]> = self
                 .data
                 .iter()
@@ -121,9 +117,7 @@ mod field {
         }
     }
 
-    impl<I: Copy> Field for Arr2D<I> {
-        type Data = Box<[I]>;
-        type Item = I;
+    impl<I: Copy> Field<I> for Arr2D<I> {
         fn full(item: I, size: Size2D) -> Self {
             Arr2D {
                 size,
@@ -133,14 +127,6 @@ mod field {
 
         fn size(&self) -> Size2D {
             self.size
-        }
-
-        fn data(&self) -> &Self::Data {
-            &self.data
-        }
-
-        fn data_mut(&mut self) -> &mut Self::Data {
-            &mut self.data
         }
 
         #[inline]
@@ -164,7 +150,7 @@ mod mask {
         Inside,
     }
 
-    pub trait Mask {
+    pub trait Mask: Copy {
         fn new() -> Self;
         fn inside() -> Self;
         fn outside() -> Self;
@@ -213,7 +199,6 @@ mod mask {
 }
 
 mod grid {
-    use std::ops::{Add, Mul};
     use std::rc::Rc;
 
     use crate::field::Field;
@@ -221,32 +206,20 @@ mod grid {
     use crate::traits::Numeric;
     use crate::Size2D;
 
-    pub trait Grid
+    pub trait Grid<I, M>
     where
         Self: Sized,
-        Self::Coord: Field,
-        Self::MaskContainer: Field,
-        <Self::MaskContainer as Field>::Item: Mask,
+        Self::Coord: Field<I>,
+        Self::MaskContainer: Field<M>,
+        M: Mask,
     {
         type Coord;
         type MaskContainer;
 
-        fn cartesian(
-            size: Size2D,
-            x_start: <Self::Coord as Field>::Item,
-            y_start: <Self::Coord as Field>::Item,
-            dx: <Self::Coord as Field>::Item,
-            dy: <Self::Coord as Field>::Item,
-        ) -> Rc<Self> {
+        fn cartesian(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Rc<Self> {
             Rc::new(Self::cartesian_owned(size, x_start, y_start, dx, dy))
         }
-        fn cartesian_owned(
-            size: Size2D,
-            x_start: <Self::Coord as Field>::Item,
-            y_start: <Self::Coord as Field>::Item,
-            dx: <Self::Coord as Field>::Item,
-            dy: <Self::Coord as Field>::Item,
-        ) -> Self;
+        fn cartesian_owned(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self;
         fn get_x(&self) -> &Self::Coord;
         fn get_dx(&self) -> &Self::Coord;
         fn get_y(&self) -> &Self::Coord;
@@ -262,14 +235,10 @@ mod grid {
         }
     }
 
-    pub trait GridTopology
+    pub trait GridTopology<I, M>
     where
-        Self::Grid: Grid,
-        // <<Self::Grid as Grid>::Coord as Field>::Item:
-        // Numeric + Mul<f64, Output = <<Self::Grid as Grid>::Coord as Field>::Item>,
-        // + Add<f64, Output = <<Self::Grid as Grid>::Coord as Field>::Item>
-        // + Add<Output = <<Self::Grid as Grid>::Coord as Field>::Item>,
-        <<Self::Grid as Grid>::MaskContainer as Field>::Item: Mask,
+        Self::Grid: Grid<I, M>,
+        M: Mask,
     {
         type Grid;
         fn get_center(&self) -> Rc<Self::Grid>;
@@ -280,25 +249,25 @@ mod grid {
 
         fn get_corner(&self) -> Rc<Self::Grid>;
 
-        fn cartesian(
-            size: Size2D,
-            x_start: <<Self::Grid as Grid>::Coord as Field>::Item,
-            y_start: <<Self::Grid as Grid>::Coord as Field>::Item,
-            dx: <<Self::Grid as Grid>::Coord as Field>::Item,
-            dy: <<Self::Grid as Grid>::Coord as Field>::Item,
-        ) -> Self;
+        fn cartesian(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self;
 
-        fn is_v_inside(pos: Size2D, center_mask: &<Self::Grid as Grid>::MaskContainer) -> bool {
-            center_mask.at([pos.0, pos.1]).is_inside()
+        fn is_v_inside(
+            pos: Size2D,
+            center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
+        ) -> bool {
+            center_mask[[pos.0, pos.1]].is_inside()
                 && center_mask.at([pos.0, pos.1 + 1]).is_inside()
         }
-        fn is_h_inside(pos: Size2D, center_mask: &<Self::Grid as Grid>::MaskContainer) -> bool {
+        fn is_h_inside(
+            pos: Size2D,
+            center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
+        ) -> bool {
             center_mask.at([pos.0, pos.1]).is_inside()
                 && center_mask.at([pos.0 + 1, pos.1 + 1]).is_inside()
         }
         fn is_corner_inside(
             pos: Size2D,
-            center_mask: &<Self::Grid as Grid>::MaskContainer,
+            center_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
         ) -> bool {
             center_mask.at([pos.0, pos.1]).is_inside()
                 && center_mask.at([pos.0, pos.1 + 1]).is_inside()
@@ -307,18 +276,16 @@ mod grid {
         }
 
         fn make_mask(
-            base_mask: &<Self::Grid as Grid>::MaskContainer,
-            is_inside_strategy: fn(Size2D, &<Self::Grid as Grid>::MaskContainer) -> bool,
-        ) -> <Self::Grid as Grid>::MaskContainer {
-            let mut mask = <Self::Grid as Grid>::MaskContainer::full(
-                <<Self::Grid as Grid>::MaskContainer as Field>::Item::inside(),
-                base_mask.size(),
-            );
+            base_mask: &<Self::Grid as Grid<I, M>>::MaskContainer,
+            is_inside_strategy: fn(Size2D, &<Self::Grid as Grid<I, M>>::MaskContainer) -> bool,
+        ) -> <Self::Grid as Grid<I, M>>::MaskContainer {
+            let mut mask =
+                <Self::Grid as Grid<I, M>>::MaskContainer::full(M::inside(), base_mask.size());
             for j in 0..base_mask.size().0 {
                 for i in 0..base_mask.size().1 {
                     *mask.at_mut([j, i]) = match is_inside_strategy((j, i), base_mask) {
-                        true => <<Self::Grid as Grid>::MaskContainer as Field>::Item::inside(),
-                        false => <<Self::Grid as Grid>::MaskContainer as Field>::Item::outside(),
+                        true => M::inside(),
+                        false => M::outside(),
                     };
                 }
             }
@@ -334,54 +301,45 @@ mod grid {
         mask: CM,
     }
 
-    impl<CD, CM> Grid for Grid2D<CD, CM>
+    impl<CD, CM, I, M> Grid<I, M> for Grid2D<CD, CM>
     where
-        CD: Field,
-        CM: Field,
-        <CD as Field>::Item:
-            Numeric + std::convert::From<i32> + std::ops::Add<Output = <CD as Field>::Item>,
-        <CM as Field>::Item: Mask,
+        CD: Field<I>,
+        I: Numeric + std::ops::Add,
+        CM: Field<M>,
+        M: Mask,
     {
         type Coord = CD;
         type MaskContainer = CM;
 
-        fn cartesian_owned(
-            size: Size2D,
-            x_start: <Self::Coord as Field>::Item,
-            y_start: <Self::Coord as Field>::Item,
-            dx: <Self::Coord as Field>::Item,
-            dy: <Self::Coord as Field>::Item,
-        ) -> Self {
+        fn cartesian_owned(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self {
             let x = {
-                let mut res = CD::full(<Self::Coord as Field>::Item::zero(), size);
+                let mut res = CD::full(I::zero(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
-                        *res.at_mut([j, i]) =
-                            x_start + Into::<<Self::Coord as Field>::Item>::into(i as i32) * dx;
+                        *res.at_mut([j, i]) = x_start + dx * (i as f64);
                     })
                 });
                 res
             };
 
             let y = {
-                let mut res = CD::full(<Self::Coord as Field>::Item::zero(), size);
+                let mut res = CD::full(I::zero(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
-                        *res.at_mut([j, i]) =
-                            y_start + Into::<<Self::Coord as Field>::Item>::into(j as i32) * dy;
+                        *res.at_mut([j, i]) = y_start + dy * (j as f64);
                     })
                 });
                 res
             };
 
             let mask = {
-                let mut res = CM::full(<Self::MaskContainer as Field>::Item::inside(), size);
+                let mut res = CM::full(M::inside(), size);
                 (0..size.0).for_each(|j| {
                     (0..size.1).for_each(|i| {
                         *res.at_mut([j, i]) =
                             match (j == 0) | (j == size.0 - 1) | (i == 0) | (i == size.1 - 1) {
-                                true => <Self::MaskContainer as Field>::Item::outside(),
-                                false => <Self::MaskContainer as Field>::Item::inside(),
+                                true => M::outside(),
+                                false => M::inside(),
                             };
                     })
                 });
@@ -421,7 +379,6 @@ mod grid {
         }
     }
 
-    #[allow(dead_code)]
     pub struct StaggeredGrid<G> {
         center: Rc<G>,
         h_side: Rc<G>,
@@ -429,15 +386,11 @@ mod grid {
         corner: Rc<G>,
     }
 
-    #[allow(dead_code)]
-    impl<G> GridTopology for StaggeredGrid<G>
+    impl<I, M, G> GridTopology<I, M> for StaggeredGrid<G>
     where
-        G: Grid,
-        <<G as Grid>::MaskContainer as Field>::Item: Mask,
-        <<G as Grid>::Coord as Field>::Item: Numeric
-            + Mul<f64, Output = <<G as Grid>::Coord as Field>::Item>
-            + Add<f64, Output = <<G as Grid>::Coord as Field>::Item>
-            + Add<Output = <<G as Grid>::Coord as Field>::Item>,
+        G: Grid<I, M>,
+        M: Mask,
+        I: Numeric,
     {
         type Grid = G;
         fn get_center(&self) -> Rc<G> {
@@ -456,13 +409,7 @@ mod grid {
             Rc::clone(&self.corner)
         }
 
-        fn cartesian(
-            size: Size2D,
-            x_start: <<Self::Grid as Grid>::Coord as Field>::Item,
-            y_start: <<Self::Grid as Grid>::Coord as Field>::Item,
-            dx: <<Self::Grid as Grid>::Coord as Field>::Item,
-            dy: <<Self::Grid as Grid>::Coord as Field>::Item,
-        ) -> Self {
+        fn cartesian(size: Size2D, x_start: I, y_start: I, dx: I, dy: I) -> Self {
             let x_shift = x_start + dx * 0.5;
             let y_shift = y_start + dy * 0.5;
             let center = G::cartesian(size, x_start, y_start, dx, dy);
@@ -498,12 +445,12 @@ mod var {
     use crate::mask::Mask;
     use crate::traits::Numeric;
 
-    pub trait Variable
+    pub trait Variable<I, M>
     where
         Self: Sized,
-        Self::Data: Field,
-        Self::Grid: Grid,
-        <<Self::Grid as Grid>::MaskContainer as Field>::Item: Mask,
+        Self::Data: Field<I>,
+        Self::Grid: Grid<I, M>,
+        M: Mask,
     {
         type Data;
         type Grid;
@@ -544,19 +491,19 @@ mod var {
         }
     }
 
-    impl<CD, G> Variable for Var<CD, G>
+    impl<CD, G, I, M> Variable<I, M> for Var<CD, G>
     where
-        CD: Field,
-        G: Grid,
-        <CD as Field>::Item: Numeric,
-        <G::MaskContainer as Field>::Item: Mask,
+        CD: Field<I>,
+        G: Grid<I, M>,
+        I: Numeric,
+        M: Mask,
     {
         type Data = CD;
         type Grid = G;
 
         fn zeros(grid: &Rc<Self::Grid>) -> Self {
             Self {
-                data: Self::Data::full(<CD as Field>::Item::zero(), grid.size()),
+                data: Self::Data::full(I::zero(), grid.size()),
                 grid: Rc::clone(grid),
             }
         }
@@ -581,15 +528,11 @@ pub mod rhs {
     };
     use std::rc::Rc;
 
-    pub fn pg_i_arr<V>(eta: &V, p: &Param, grid_u: &Rc<V::Grid>) -> V
+    pub fn pg_i_arr<V, I, M>(eta: &V, p: &Param, grid_u: &Rc<V::Grid>) -> V
     where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask + Copy,
-        <<V as Variable>::Data as Field>::Item:
-            Numeric + From<<<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item>,
-        <<V as Variable>::Data as Field>::Item:
-            From<<<<V as Variable>::Grid as Grid>::Coord as Field>::Item>,
-        <<<V as Variable>::Grid as Grid>::Coord as Field>::Item: Copy,
+        V: Variable<I, M>,
+        I: Numeric + From<M>,
+        M: Mask,
     {
         let dx = eta.get_grid().get_dx();
         let eta_data = eta.get_data();
@@ -602,16 +545,13 @@ pub mod rhs {
         for j in 0..ny {
             for i in 0..nx {
                 if mask_u.at([j, i]).is_outside() {
-                    *d.at_mut([j, i]) = <<V as Variable>::Data as Field>::Item::zero();
+                    *d.at_mut([j, i]) = I::zero();
                 }
                 ip1 = cyclic_shift(i, 1, nx);
                 *d.at_mut([j, i]) = (*eta_data.at([j, ip1])
-                    * Into::<<<V as Variable>::Data as Field>::Item>::into(*mask_eta.at([j, ip1]))
-                    - *eta_data.at([j, i])
-                        * Into::<<<V as Variable>::Data as Field>::Item>::into(
-                            *mask_eta.at([j, i]),
-                        ))
-                    / Into::<<<V as Variable>::Data as Field>::Item>::into(*dx.at([j, i]))
+                    * Into::<I>::into(*mask_eta.at([j, ip1]))
+                    - *eta_data.at([j, i]) * Into::<I>::into(*mask_eta.at([j, i])))
+                    / *dx.at([j, i])
                     * (-p.g);
             }
         }
@@ -619,15 +559,11 @@ pub mod rhs {
         res
     }
 
-    pub fn pg_j_arr<V>(eta: &V, p: &Param, grid_v: &Rc<V::Grid>) -> V
+    pub fn pg_j_arr<V, I, M>(eta: &V, p: &Param, grid_v: &Rc<V::Grid>) -> V
     where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask + Copy,
-        <<V as Variable>::Data as Field>::Item:
-            Numeric + From<<<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item>,
-        <<V as Variable>::Data as Field>::Item:
-            From<<<<V as Variable>::Grid as Grid>::Coord as Field>::Item>,
-        <<<V as Variable>::Grid as Grid>::Coord as Field>::Item: Copy,
+        V: Variable<I, M>,
+        I: Numeric + From<M>,
+        M: Mask,
     {
         let dy = eta.get_grid().get_dy();
         let eta_data = eta.get_data();
@@ -644,27 +580,20 @@ pub mod rhs {
                     continue;
                 }
                 *d.at_mut([j, i]) = (*eta_data.at([jp1, i])
-                    * Into::<<<V as Variable>::Data as Field>::Item>::into(*mask_eta.at([jp1, i]))
-                    - *eta_data.at([j, i])
-                        * Into::<<<V as Variable>::Data as Field>::Item>::into(
-                            *mask_eta.at([j, i]),
-                        ))
-                    / Into::<<<V as Variable>::Data as Field>::Item>::into(*dy.at([j, i]))
+                    * Into::<I>::into(*mask_eta.at([jp1, i]))
+                    - *eta_data.at([j, i]) * Into::<I>::into(*mask_eta.at([j, i])))
+                    / *dy.at([j, i])
                     * (-p.g);
             }
         }
         res
     }
 
-    pub fn div_flow<V>(u: &V, v: &V, p: &Param, grid_eta: &Rc<<V as Variable>::Grid>) -> V
+    pub fn div_flow<V, I, M>(u: &V, v: &V, p: &Param, grid_eta: &Rc<V::Grid>) -> V
     where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask + Copy,
-        <<V as Variable>::Data as Field>::Item:
-            Numeric + From<<<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item>,
-        <<V as Variable>::Data as Field>::Item:
-            From<<<<V as Variable>::Grid as Grid>::Coord as Field>::Item>,
-        <<<V as Variable>::Grid as Grid>::Coord as Field>::Item: Copy,
+        V: Variable<I, M>,
+        I: Numeric + From<M>,
+        M: Mask,
     {
         let dx = u.get_grid().get_dx();
         let dy = v.get_grid().get_dy();
@@ -686,21 +615,13 @@ pub mod rhs {
                     continue;
                 }
                 im1 = cyclic_shift(i, -1, nx);
-                *d.at_mut([j, i]) =
-                    ((Into::<<<V as Variable>::Data as Field>::Item>::into(*mask_u.at([j, i]))
-                        * *ud.at([j, i])
-                        - Into::<<<V as Variable>::Data as Field>::Item>::into(
-                            *mask_u.at([j, im1]),
-                        ) * *ud.at([j, im1]))
-                        / Into::<<<V as Variable>::Data as Field>::Item>::into(*dx.at([j, i]))
-                        + (Into::<<<V as Variable>::Data as Field>::Item>::into(
-                            *mask_v.at([j, i]),
-                        ) * *vd.at([j, i])
-                            - Into::<<<V as Variable>::Data as Field>::Item>::into(
-                                *mask_v.at([jm1, i]),
-                            ) * *vd.at([jm1, i]))
-                            / Into::<<<V as Variable>::Data as Field>::Item>::into(*dy.at([j, i])))
-                        * (-p.h)
+                *d.at_mut([j, i]) = ((Into::<I>::into(*mask_u.at([j, i])) * *ud.at([j, i])
+                    - Into::<I>::into(*mask_u.at([j, im1])) * *ud.at([j, im1]))
+                    / *dx.at([j, i])
+                    + (Into::<I>::into(*mask_v.at([j, i])) * *vd.at([j, i])
+                        - Into::<I>::into(*mask_v.at([jm1, i])) * *vd.at([jm1, i]))
+                        / *dy.at([j, i]))
+                    * (-p.h)
             }
         }
         res
@@ -708,27 +629,21 @@ pub mod rhs {
 }
 
 pub mod integrate {
+    use crate::mask::Mask;
     use crate::state::StateDeque;
-    use crate::{field::Field, grid::Grid, mask::Mask, traits::Numeric, var::Variable};
+    use crate::traits::Numeric;
+    use crate::{field::Field, var::Variable};
 
     const AB2_FAC: [f64; 2] = [-1f64 / 2f64, 3f64 / 2f64];
     const AB3_FAC: [f64; 3] = [5f64 / 12f64, -16f64 / 12f64, 23f64 / 12f64];
 
-    type Integrator<V> = fn(
-        &StateDeque<V>,
-        <<V as Variable>::Data as Field>::Item,
-        [usize; 2],
-    ) -> <<V as Variable>::Data as Field>::Item;
+    type Integrator<V, I> = fn(&StateDeque<V>, I, [usize; 2]) -> I;
 
-    pub fn time_step<V: Variable>(
-        strategy: Integrator<V>,
+    pub fn time_step<V: Variable<I, M>, I: Numeric, M: Mask>(
+        strategy: Integrator<V, I>,
         past_state: &StateDeque<V>,
-        step: <<V as Variable>::Data as Field>::Item,
-    ) -> V
-    where
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask,
-        <<V as Variable>::Data as Field>::Item: Copy,
-    {
+        step: I,
+    ) -> V {
         let mut res = V::zeros(past_state[0].get_grid());
         let d = res.get_data_mut();
         let (ny, nx) = d.size();
@@ -741,29 +656,19 @@ pub mod integrate {
         res
     }
 
-    pub fn ef<V>(
+    pub fn ef<V: Variable<I, M>, I: Numeric, M: Mask>(
         past_state: &StateDeque<V>,
-        step: <<V as Variable>::Data as Field>::Item,
+        step: I,
         idx: [usize; 2],
-    ) -> <<V as Variable>::Data as Field>::Item
-    where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask,
-        <<V as Variable>::Data as Field>::Item: Numeric,
-    {
+    ) -> I {
         *past_state[0].get_data().at(idx) * step
     }
 
-    pub fn ab2<V>(
+    pub fn ab2<V: Variable<I, M>, I: Numeric, M: Mask>(
         past_state: &StateDeque<V>,
-        step: <<V as Variable>::Data as Field>::Item,
+        step: I,
         idx: [usize; 2],
-    ) -> <<V as Variable>::Data as Field>::Item
-    where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask,
-        <<V as Variable>::Data as Field>::Item: Numeric,
-    {
+    ) -> I {
         if past_state.len() < 2 {
             ef(past_state, step, idx)
         } else {
@@ -773,16 +678,11 @@ pub mod integrate {
         }
     }
 
-    pub fn ab3<V>(
+    pub fn ab3<V: Variable<I, M>, I: Numeric, M: Mask>(
         past_state: &StateDeque<V>,
-        step: <<V as Variable>::Data as Field>::Item,
+        step: I,
         idx: [usize; 2],
-    ) -> <<V as Variable>::Data as Field>::Item
-    where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask,
-        <<V as Variable>::Data as Field>::Item: Numeric,
-    {
+    ) -> I {
         if past_state.len() < 3 {
             ab2(past_state, step, idx)
         } else {
@@ -844,17 +744,12 @@ mod tests {
         Param,
     };
 
-    pub fn rhs<V>(u: &V, v: &V, eta: &V, param: &Param) -> [V; 3]
-    where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask + Copy,
-        <<V as Variable>::Data as Field>::Item: Numeric,
-        <<V as Variable>::Data as Field>::Item:
-            std::convert::From<<<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item>,
-        <<V as Variable>::Data as Field>::Item:
-            std::convert::From<<<<V as Variable>::Grid as Grid>::Coord as Field>::Item> + Copy,
-        <<<V as Variable>::Grid as Grid>::Coord as Field>::Item: Copy,
-    {
+    pub fn rhs<V: Variable<I, M>, I: Numeric + From<M>, M: Mask>(
+        u: &V,
+        v: &V,
+        eta: &V,
+        param: &Param,
+    ) -> [V; 3] {
         [
             pg_i_arr(eta, param, u.get_grid()),
             pg_j_arr(eta, param, v.get_grid()),
@@ -862,12 +757,11 @@ mod tests {
         ]
     }
 
-    fn eta_init<V>(grid_eta: &Rc<<V as Variable>::Grid>) -> V
+    fn eta_init<V, I, M>(grid_eta: &Rc<V::Grid>) -> V
     where
-        V: Variable,
-        <<<V as Variable>::Grid as Grid>::MaskContainer as Field>::Item: Mask,
-        <<<V as Variable>::Grid as Grid>::Coord as Field>::Item: Numeric,
-        <<V as Variable>::Data as Field>::Item: Numeric,
+        V: Variable<I, M>,
+        I: Numeric,
+        M: Mask,
     {
         let mut eta = V::zeros(grid_eta);
         let d = eta.get_data_mut();
@@ -911,10 +805,10 @@ mod tests {
         eta
     }
 
-    fn write_to_file<D>(file_name: &str, data: &D) -> Result<(), Box<dyn Error>>
+    fn write_to_file<D, I>(file_name: &str, data: &D) -> Result<(), Box<dyn Error>>
     where
-        D: Field,
-        <D as Field>::Item: std::fmt::Display,
+        D: Field<I>,
+        I: std::fmt::Display,
     {
         let mut file = std::fs::File::create(file_name)?;
 
