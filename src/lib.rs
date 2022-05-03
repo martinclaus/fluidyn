@@ -617,11 +617,11 @@ pub mod integrate {
     const AB2_FAC: [f64; 2] = [-1f64 / 2f64, 3f64 / 2f64];
     const AB3_FAC: [f64; 3] = [5f64 / 12f64, -16f64 / 12f64, 23f64 / 12f64];
 
-    type Integrator<V, I> = fn(&StateDeque<V>, I, [usize; 2]) -> I;
+    type Integrator<V, I> = fn(&StateDeque<&V>, I, [usize; 2]) -> I;
 
     pub fn time_step<V: Variable<I, M>, I: Numeric, M: Mask>(
         strategy: Integrator<V, I>,
-        past_state: &StateDeque<V>,
+        past_state: StateDeque<&V>,
         step: I,
     ) -> V {
         let mut res = V::zeros(past_state[0].get_grid());
@@ -630,14 +630,14 @@ pub mod integrate {
 
         for j in 0..ny {
             for i in 0..nx {
-                d[[j, i]] = strategy(past_state, step, [j, i]);
+                d[[j, i]] = strategy(&past_state, step, [j, i]);
             }
         }
         res
     }
 
     pub fn ef<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<V>,
+        past_state: &StateDeque<&V>,
         step: I,
         idx: [usize; 2],
     ) -> I {
@@ -645,7 +645,7 @@ pub mod integrate {
     }
 
     pub fn ab2<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<V>,
+        past_state: &StateDeque<&V>,
         step: I,
         idx: [usize; 2],
     ) -> I {
@@ -659,7 +659,7 @@ pub mod integrate {
     }
 
     pub fn ab3<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<V>,
+        past_state: &StateDeque<&V>,
         step: I,
         idx: [usize; 2],
     ) -> I {
@@ -674,20 +674,137 @@ pub mod integrate {
     }
 }
 
-mod state {
-    use std::{collections::VecDeque, ops::Index};
+pub mod state {
+    use std::{
+        collections::{HashMap, VecDeque},
+        hash::Hash,
+        ops::{Index, IndexMut},
+        rc::Rc,
+    };
 
-    pub struct StateDeque<V> {
-        inner: VecDeque<V>,
+    use crate::{mask::Mask, var::Variable};
+
+    #[derive(Copy, Clone, PartialEq, Eq, Hash)]
+    pub enum SWMVars {
+        U,
+        V,
+        ETA,
     }
 
-    impl<V> StateDeque<V> {
-        pub fn new(capacity: usize) -> StateDeque<V> {
-            StateDeque {
-                inner: VecDeque::<V>::with_capacity(capacity),
+    pub trait VarSet: Sized + Copy {
+        fn values() -> &'static [Self];
+    }
+
+    impl VarSet for SWMVars {
+        fn values() -> &'static [Self] {
+            &[Self::U, Self::V, Self::ETA][..]
+        }
+    }
+
+    pub trait StateContainer<K, V>
+    where
+        Self: Index<K, Output = V> + IndexMut<K, Output = V>,
+    {
+        fn new<I, M>(grid_map: &[GridMap<K, <V as Variable<I, M>>::Grid>]) -> Self
+        where
+            V: Variable<I, M>,
+            M: Mask;
+    }
+
+    pub struct State<K, V> {
+        vars: HashMap<K, V>,
+    }
+
+    type GridMap<K, G> = (K, Rc<G>);
+
+    impl<K, V> StateContainer<K, V> for State<K, V>
+    where
+        K: Eq + Hash + VarSet,
+    {
+        fn new<I, M>(grid_map: &[GridMap<K, <V as Variable<I, M>>::Grid>]) -> Self
+        where
+            V: Variable<I, M>,
+            M: Mask,
+        {
+            let mut res = Self {
+                vars: HashMap::new(),
+            };
+
+            for (k, g) in grid_map {
+                res.vars.insert(*k, V::zeros(g));
+            }
+            res
+        }
+    }
+
+    impl<K, V> Index<K> for State<K, V>
+    where
+        K: Eq + Hash,
+    {
+        type Output = V;
+
+        fn index(&self, index: K) -> &Self::Output {
+            self.vars.get(&index).unwrap()
+        }
+    }
+
+    impl<K, V> IndexMut<K> for State<K, V>
+    where
+        K: Eq + Hash,
+    {
+        fn index_mut(&mut self, index: K) -> &mut Self::Output {
+            self.vars.get_mut(&index).unwrap()
+        }
+    }
+
+    pub trait StateBuilder<K, V, I, M>
+    where
+        V: Variable<I, M>,
+        M: Mask,
+    {
+        fn new(grid_map: &[GridMap<K, V::Grid>]) -> Self;
+        fn get_grid_map(&self) -> &[GridMap<K, V::Grid>];
+
+        fn make<S: StateContainer<K, V>>(&self) -> S {
+            S::new(self.get_grid_map())
+        }
+    }
+    pub struct Builder<K, G> {
+        grid_map: Box<[GridMap<K, G>]>,
+    }
+
+    impl<K, V, I, M> StateBuilder<K, V, I, M> for Builder<K, V::Grid>
+    where
+        V: Variable<I, M>,
+        M: Mask,
+        K: Clone,
+    {
+        fn make<S: StateContainer<K, V>>(&self) -> S {
+            S::new(self.grid_map.as_ref())
+        }
+
+        fn new(grid_map: &[GridMap<K, V::Grid>]) -> Self {
+            Self {
+                grid_map: grid_map.to_vec().into_boxed_slice(),
             }
         }
-        pub fn push(&mut self, elem: V) {
+
+        fn get_grid_map(&self) -> &[GridMap<K, V::Grid>] {
+            self.grid_map.as_ref()
+        }
+    }
+    pub struct StateDeque<S> {
+        inner: VecDeque<S>,
+    }
+
+    impl<S> StateDeque<S> {
+        pub fn new(capacity: usize) -> StateDeque<S> {
+            StateDeque {
+                inner: VecDeque::<S>::with_capacity(capacity),
+            }
+        }
+
+        pub fn push(&mut self, elem: S) {
             if self.inner.len() == self.inner.capacity() {
                 self.inner.pop_front();
             }
@@ -697,6 +814,22 @@ mod state {
         pub fn len(&self) -> usize {
             self.inner.len()
         }
+
+        pub fn is_empty(&self) -> bool {
+            self.inner.is_empty()
+        }
+
+        pub fn take_var<K, V, I, M>(&self, var: K) -> StateDeque<&V>
+        where
+            S: StateContainer<K, V>,
+            K: VarSet,
+            V: Variable<I, M>,
+            M: Mask,
+        {
+            StateDeque {
+                inner: { self.inner.iter().map(|s| &s[var]).collect() },
+            }
+        }
     }
 
     impl<V> Index<usize> for StateDeque<V> {
@@ -704,6 +837,12 @@ mod state {
 
         fn index(&self, index: usize) -> &Self::Output {
             self.inner.index(index)
+        }
+    }
+
+    impl<V> IndexMut<usize> for StateDeque<V> {
+        fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+            self.inner.index_mut(index)
         }
     }
 }
@@ -718,23 +857,28 @@ mod benchmark {
         integrate::{ab3, time_step},
         mask::{DomainMask, Mask},
         rhs::{div_flow, pg_i_arr, pg_j_arr},
+        state,
         state::StateDeque,
+        state::{SWMVars, State, StateBuilder, StateContainer},
         traits::Numeric,
         var::{Var, Variable},
         Param,
     };
 
-    pub fn rhs<V: Variable<I, M>, I: Numeric + From<M>, M: Mask>(
-        u: &V,
-        v: &V,
-        eta: &V,
+    pub fn rhs<S: StateContainer<SWMVars, V>, V: Variable<I, M>, I: Numeric + From<M>, M: Mask>(
+        state: &S,
         param: &Param,
-    ) -> [V; 3] {
-        [
-            pg_i_arr(eta, param, u.get_grid()),
-            pg_j_arr(eta, param, v.get_grid()),
-            div_flow(u, v, param, eta.get_grid()),
-        ]
+        mut new_state: S,
+    ) -> S {
+        new_state[SWMVars::U] = pg_i_arr(&state[SWMVars::ETA], param, state[SWMVars::U].get_grid());
+        new_state[SWMVars::V] = pg_j_arr(&state[SWMVars::ETA], param, state[SWMVars::V].get_grid());
+        new_state[SWMVars::ETA] = div_flow(
+            &state[SWMVars::U],
+            &state[SWMVars::V],
+            param,
+            state[SWMVars::ETA].get_grid(),
+        );
+        new_state
     }
 
     fn eta_init<V, I, M>(grid_eta: &Rc<V::Grid>) -> V
@@ -815,44 +959,44 @@ mod benchmark {
             h: 1.0,
             _rho_0: 1024.0,
         };
-        let grid = StaggeredGrid::<G>::cartesian((100, 100), 0.0, 0.0, 1.0, 1.0);
-        let mut u = V::zeros(&grid.get_h_face());
-        let mut v = V::zeros(&grid.get_v_face());
-        let mut eta: V = eta_init(&grid.get_center());
-        let mut past_eta = StateDeque::<V>::new(3);
-        let mut past_u = StateDeque::<V>::new(3);
-        let mut past_v = StateDeque::<V>::new(3);
+        let state_builder = {
+            let grid = StaggeredGrid::<G>::cartesian((100, 100), 0.0, 0.0, 1.0, 1.0);
+            let grid_map = vec![
+                (SWMVars::U, grid.get_h_face()),
+                (SWMVars::V, grid.get_v_face()),
+                (SWMVars::ETA, grid.get_center()),
+            ];
+            <state::Builder<_, _> as StateBuilder<_, V, _, _>>::new(&grid_map)
+        };
+        let mut state: State<_, V> = state_builder.make();
+        state[SWMVars::ETA] = eta_init(state[SWMVars::ETA].get_grid());
+        let mut state_incs = StateDeque::new(3);
 
         let step = 0.05;
 
-        if let Err(err) = write_to_file("eta_init.csv", eta.get_data()) {
+        if let Err(err) = write_to_file("eta_init.csv", state[SWMVars::ETA].get_data()) {
             eprintln!("{}", err);
         }
 
         let now = std::time::Instant::now();
 
         (0..500).for_each(|_| {
-            {
-                let [u_inc, v_inc, eta_inc] = rhs(&u, &v, &eta, &param);
-                past_u.push(u_inc);
-                past_v.push(v_inc);
-                past_eta.push(eta_inc);
-            }
-            u += time_step(ab3, &past_u, step);
-            v += time_step(ab3, &past_v, step);
-            eta += time_step(ab3, &past_eta, step);
+            state_incs.push(rhs(&state, &param, state_builder.make()));
+            state[SWMVars::U] += time_step(ab3, state_incs.take_var(SWMVars::U), step);
+            state[SWMVars::V] += time_step(ab3, state_incs.take_var(SWMVars::V), step);
+            state[SWMVars::ETA] += time_step(ab3, state_incs.take_var(SWMVars::ETA), step);
         });
         let t = now.elapsed();
 
         println!("Time: {:?}", t.as_secs_f64());
 
-        if let Err(err) = write_to_file("eta.csv", eta.get_data()) {
+        if let Err(err) = write_to_file("eta.csv", state[SWMVars::ETA].get_data()) {
             eprintln!("{}", err);
         }
-        if let Err(err) = write_to_file("u.csv", u.get_data()) {
+        if let Err(err) = write_to_file("u.csv", state[SWMVars::U].get_data()) {
             eprintln!("{}", err);
         }
-        if let Err(err) = write_to_file("v.csv", v.get_data()) {
+        if let Err(err) = write_to_file("v.csv", state[SWMVars::V].get_data()) {
             eprintln!("{}", err);
         }
     }
