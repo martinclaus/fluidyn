@@ -609,6 +609,8 @@ pub mod rhs {
 }
 
 pub mod integrate {
+    use std::marker::PhantomData;
+
     use crate::mask::Mask;
     use crate::state::StateDeque;
     use crate::traits::Numeric;
@@ -617,59 +619,84 @@ pub mod integrate {
     const AB2_FAC: [f64; 2] = [-1f64 / 2f64, 3f64 / 2f64];
     const AB3_FAC: [f64; 3] = [5f64 / 12f64, -16f64 / 12f64, 23f64 / 12f64];
 
-    type Integrator<V, I> = fn(&StateDeque<&V>, I, [usize; 2]) -> I;
+    pub trait Integrator<V, I, M> {
+        fn call(past_state: &StateDeque<&V>, step: I, idx: [usize; 2]) -> I;
+    }
 
-    pub fn time_step<V: Variable<I, M>, I: Numeric, M: Mask>(
-        strategy: Integrator<V, I>,
-        past_state: StateDeque<&V>,
-        step: I,
-    ) -> V {
-        let mut res = V::zeros(past_state[0].get_grid());
-        let d = res.get_data_mut();
-        let (ny, nx) = d.size();
+    pub struct Integrate<I> {
+        _integrator_type: PhantomData<I>,
+    }
 
-        for j in 0..ny {
-            for i in 0..nx {
-                d[[j, i]] = strategy(&past_state, step, [j, i]);
+    impl<IS> Integrate<IS> {
+        pub fn compute_inc<V: Variable<I, M>, I, M: Mask>(past_state: StateDeque<&V>, step: I) -> V
+        where
+            IS: Integrator<V, I, M>,
+            V: Variable<I, M>,
+            I: Copy,
+            M: Mask,
+        {
+            let mut res = V::zeros(past_state[0].get_grid());
+            let d = res.get_data_mut();
+            let (ny, nx) = d.size();
+
+            for j in 0..ny {
+                for i in 0..nx {
+                    d[[j, i]] = IS::call(&past_state, step, [j, i]);
+                }
+            }
+            res
+        }
+    }
+
+    pub struct Ef;
+
+    impl<V, I, M> Integrator<V, I, M> for Ef
+    where
+        V: Variable<I, M>,
+        M: Mask,
+        I: Numeric,
+    {
+        fn call(past_state: &StateDeque<&V>, step: I, idx: [usize; 2]) -> I {
+            past_state[0].get_data()[idx] * step
+        }
+    }
+
+    pub struct Ab2;
+
+    impl<V, I, M> Integrator<V, I, M> for Ab2
+    where
+        V: Variable<I, M>,
+        M: Mask,
+        I: Numeric,
+    {
+        fn call(past_state: &StateDeque<&V>, step: I, idx: [usize; 2]) -> I {
+            if past_state.len() < 2 {
+                Ef::call(past_state, step, idx)
+            } else {
+                (past_state[0].get_data()[idx] * AB2_FAC[0]
+                    + past_state[1].get_data()[idx] * AB2_FAC[1])
+                    * step
             }
         }
-        res
     }
 
-    pub fn ef<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<&V>,
-        step: I,
-        idx: [usize; 2],
-    ) -> I {
-        past_state[0].get_data()[idx] * step
-    }
+    pub struct Ab3;
 
-    pub fn ab2<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<&V>,
-        step: I,
-        idx: [usize; 2],
-    ) -> I {
-        if past_state.len() < 2 {
-            ef(past_state, step, idx)
-        } else {
-            (past_state[0].get_data()[idx] * AB2_FAC[0]
-                + past_state[1].get_data()[idx] * AB2_FAC[1])
-                * step
-        }
-    }
-
-    pub fn ab3<V: Variable<I, M>, I: Numeric, M: Mask>(
-        past_state: &StateDeque<&V>,
-        step: I,
-        idx: [usize; 2],
-    ) -> I {
-        if past_state.len() < 3 {
-            ab2(past_state, step, idx)
-        } else {
-            (past_state[0].get_data()[idx] * AB3_FAC[0]
-                + past_state[1].get_data()[idx] * AB3_FAC[1]
-                + past_state[2].get_data()[idx] * AB3_FAC[2])
-                * step
+    impl<V, I, M> Integrator<V, I, M> for Ab3
+    where
+        V: Variable<I, M>,
+        M: Mask,
+        I: Numeric,
+    {
+        fn call(past_state: &StateDeque<&V>, step: I, idx: [usize; 2]) -> I {
+            if past_state.len() < 3 {
+                Ab2::call(past_state, step, idx)
+            } else {
+                (past_state[0].get_data()[idx] * AB3_FAC[0]
+                    + past_state[1].get_data()[idx] * AB3_FAC[1]
+                    + past_state[2].get_data()[idx] * AB3_FAC[2])
+                    * step
+            }
         }
     }
 }
@@ -854,7 +881,7 @@ mod benchmark {
     use crate::{
         field::{Arr2D, Field},
         grid::{Grid, Grid2D, GridTopology, StaggeredGrid},
-        integrate::{ab3, time_step},
+        integrate::{Ab3, Integrate},
         mask::{DomainMask, Mask},
         rhs::{div_flow, pg_i_arr, pg_j_arr},
         state,
@@ -982,9 +1009,12 @@ mod benchmark {
 
         (0..500).for_each(|_| {
             state_incs.push(rhs(&state, &param, state_builder.make()));
-            state[SWMVars::U] += time_step(ab3, state_incs.take_var(SWMVars::U), step);
-            state[SWMVars::V] += time_step(ab3, state_incs.take_var(SWMVars::V), step);
-            state[SWMVars::ETA] += time_step(ab3, state_incs.take_var(SWMVars::ETA), step);
+            state[SWMVars::U] +=
+                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::U), step);
+            state[SWMVars::V] +=
+                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::V), step);
+            state[SWMVars::ETA] +=
+                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::ETA), step);
         });
         let t = now.elapsed();
 
