@@ -820,6 +820,53 @@ pub mod state {
             self.grid_map.as_ref()
         }
     }
+
+    pub trait StateProvider<SC, SB, K, V, I, M>
+    where
+        SB: StateBuilder<K, V, I, M>,
+        SC: StateContainer<K, V>,
+        V: Variable<I, M>,
+        M: Mask,
+    {
+        fn new(builder: SB, capacity: usize) -> Self;
+
+        fn get(&mut self) -> SC;
+
+        fn take(&mut self, state: SC);
+    }
+
+    pub struct Provider<SB, SC> {
+        builder: SB,
+        state_buffer: VecDeque<SC>,
+    }
+
+    impl<SC, SB, K, V, I, M> StateProvider<SC, SB, K, V, I, M> for Provider<SB, SC>
+    where
+        SB: StateBuilder<K, V, I, M>,
+        SC: StateContainer<K, V>,
+        V: Variable<I, M>,
+        M: Mask,
+    {
+        fn new(builder: SB, capacity: usize) -> Self {
+            Self {
+                builder,
+                state_buffer: VecDeque::with_capacity(capacity),
+            }
+        }
+
+        fn get(&mut self) -> SC {
+            if self.state_buffer.is_empty() {
+                self.builder.make()
+            } else {
+                self.state_buffer.pop_front().unwrap()
+            }
+        }
+
+        fn take(&mut self, state: SC) {
+            self.state_buffer.push_back(state);
+        }
+    }
+
     pub struct StateDeque<S> {
         inner: VecDeque<S>,
     }
@@ -831,11 +878,14 @@ pub mod state {
             }
         }
 
-        pub fn push(&mut self, elem: S) {
-            if self.inner.len() == self.inner.capacity() {
-                self.inner.pop_front();
-            }
+        pub fn push(&mut self, elem: S) -> Option<S> {
+            let res = match self.inner.len() == self.inner.capacity() {
+                true => self.inner.pop_front(),
+                false => None,
+            };
+
             self.inner.push_back(elem);
+            res
         }
 
         pub fn len(&self) -> usize {
@@ -886,7 +936,7 @@ mod benchmark {
         rhs::{div_flow, pg_i_arr, pg_j_arr},
         state,
         state::StateDeque,
-        state::{SWMVars, State, StateBuilder, StateContainer},
+        state::{SWMVars, State, StateBuilder, StateContainer, StateProvider},
         traits::Numeric,
         var::{Var, Variable},
         Param,
@@ -995,7 +1045,8 @@ mod benchmark {
             ];
             <state::Builder<_, _> as StateBuilder<_, V, _, _>>::new(&grid_map)
         };
-        let mut state: State<_, V> = state_builder.make();
+        let mut state_provider = state::Provider::<_, State<_, V>>::new(state_builder, 10);
+        let mut state = state_provider.get();
         state[SWMVars::ETA] = eta_init(state[SWMVars::ETA].get_grid());
         let mut state_incs = StateDeque::new(3);
 
@@ -1008,7 +1059,10 @@ mod benchmark {
         let now = std::time::Instant::now();
 
         (0..500).for_each(|_| {
-            state_incs.push(rhs(&state, &param, state_builder.make()));
+            match state_incs.push(rhs(&state, &param, state_provider.get())) {
+                Some(state) => state_provider.take(state),
+                None => (),
+            };
             state[SWMVars::U] +=
                 Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::U), step);
             state[SWMVars::V] +=
