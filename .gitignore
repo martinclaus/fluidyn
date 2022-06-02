@@ -1,1 +1,6 @@
 target/
+*.csv
+flamegraph.svg
+perf.data*
+
+.DS_Store
