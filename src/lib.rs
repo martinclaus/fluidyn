@@ -470,6 +470,15 @@ mod var {
         }
     }
 
+    impl<'a, CD, G> AddAssign<&'a Var<CD, G>> for Var<CD, G>
+    where
+        CD: AddAssign<&'a CD>,
+    {
+        fn add_assign(&mut self, rhs: &'a Var<CD, G>) {
+            self.data += &rhs.data
+        }
+    }
+
     impl<CD, G, I, M> Variable<I, M> for Var<CD, G>
     where
         CD: Field<I>,
@@ -507,7 +516,7 @@ pub mod rhs {
     };
     use std::rc::Rc;
 
-    pub fn pg_i_arr<V, I, M>(eta: &V, p: &Param, grid_u: &Rc<V::Grid>) -> V
+    pub fn pg_i_arr<V, I, M>(eta: &V, p: &Param, grid_u: &Rc<V::Grid>, pg_i: &mut V)
     where
         V: Variable<I, M>,
         I: Numeric + From<M>,
@@ -517,8 +526,7 @@ pub mod rhs {
         let eta_data = eta.get_data();
         let mask_u = grid_u.get_mask();
         let mask_eta = eta.get_grid().get_mask();
-        let mut res = V::zeros(grid_u);
-        let d = res.get_data_mut();
+        let d = pg_i.get_data_mut();
         let (ny, nx) = d.size();
         let mut ip1: usize;
         for j in 0..ny {
@@ -534,11 +542,9 @@ pub mod rhs {
                 }
             }
         }
-
-        res
     }
 
-    pub fn pg_j_arr<V, I, M>(eta: &V, p: &Param, grid_v: &Rc<V::Grid>) -> V
+    pub fn pg_j_arr<V, I, M>(eta: &V, p: &Param, grid_v: &Rc<V::Grid>, pg_j: &mut V)
     where
         V: Variable<I, M>,
         I: Numeric + From<M>,
@@ -548,8 +554,7 @@ pub mod rhs {
         let eta_data = eta.get_data();
         let mask_eta = eta.get_grid().get_mask();
         let mask_v = grid_v.get_mask();
-        let mut res = V::zeros(grid_v);
-        let d = res.get_data_mut();
+        let d = pg_j.get_data_mut();
         let mut jp1: usize;
         let (ny, nx) = d.size();
         for j in 0..ny {
@@ -565,10 +570,9 @@ pub mod rhs {
                 }
             }
         }
-        res
     }
 
-    pub fn div_flow<V, I, M>(u: &V, v: &V, p: &Param, grid_eta: &Rc<V::Grid>) -> V
+    pub fn div_flow<V, I, M>(u: &V, v: &V, p: &Param, grid_eta: &Rc<V::Grid>, div: &mut V)
     where
         V: Variable<I, M>,
         I: Numeric + From<M>,
@@ -579,8 +583,7 @@ pub mod rhs {
         let mask_u = u.get_grid().get_mask();
         let mask_v = v.get_grid().get_mask();
         let mask_eta = grid_eta.get_mask();
-        let mut res = V::zeros(grid_eta);
-        let d = res.get_data_mut();
+        let d = div.get_data_mut();
         let ud = u.get_data();
         let vd = v.get_data();
         let (ny, nx) = d.size();
@@ -604,7 +607,6 @@ pub mod rhs {
                 }
             }
         }
-        res
     }
 }
 
@@ -628,15 +630,17 @@ pub mod integrate {
     }
 
     impl<IS> Integrate<IS> {
-        pub fn compute_inc<V: Variable<I, M>, I, M: Mask>(past_state: StateDeque<&V>, step: I) -> V
-        where
+        pub fn compute_inc<V: Variable<I, M>, I, M: Mask>(
+            past_state: StateDeque<&V>,
+            step: I,
+            out: &mut V,
+        ) where
             IS: Integrator<V, I, M>,
             V: Variable<I, M>,
             I: Copy,
             M: Mask,
         {
-            let mut res = V::zeros(past_state[0].get_grid());
-            let d = res.get_data_mut();
+            let d = out.get_data_mut();
             let (ny, nx) = d.size();
 
             for j in 0..ny {
@@ -644,7 +648,6 @@ pub mod integrate {
                     d[[j, i]] = IS::call(&past_state, step, [j, i]);
                 }
             }
-            res
         }
     }
 
@@ -947,13 +950,24 @@ mod benchmark {
         param: &Param,
         mut new_state: S,
     ) -> S {
-        new_state[SWMVars::U] = pg_i_arr(&state[SWMVars::ETA], param, state[SWMVars::U].get_grid());
-        new_state[SWMVars::V] = pg_j_arr(&state[SWMVars::ETA], param, state[SWMVars::V].get_grid());
-        new_state[SWMVars::ETA] = div_flow(
+        pg_i_arr(
+            &state[SWMVars::ETA],
+            param,
+            state[SWMVars::U].get_grid(),
+            &mut new_state[SWMVars::U],
+        );
+        pg_j_arr(
+            &state[SWMVars::ETA],
+            param,
+            state[SWMVars::V].get_grid(),
+            &mut new_state[SWMVars::V],
+        );
+        div_flow(
             &state[SWMVars::U],
             &state[SWMVars::V],
             param,
             state[SWMVars::ETA].get_grid(),
+            &mut new_state[SWMVars::ETA],
         );
         new_state
     }
@@ -1048,7 +1062,7 @@ mod benchmark {
         let mut state_provider = state::Provider::<_, State<_, V>>::new(state_builder, 10);
         let mut state = state_provider.get();
         state[SWMVars::ETA] = eta_init(state[SWMVars::ETA].get_grid());
-        let mut state_incs = StateDeque::new(3);
+        let mut rhs_evals = StateDeque::new(3);
 
         let step = 0.05;
 
@@ -1059,16 +1073,31 @@ mod benchmark {
         let now = std::time::Instant::now();
 
         (0..500).for_each(|_| {
-            match state_incs.push(rhs(&state, &param, state_provider.get())) {
+            match rhs_evals.push(rhs(&state, &param, state_provider.get())) {
                 Some(state) => state_provider.take(state),
                 None => (),
             };
-            state[SWMVars::U] +=
-                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::U), step);
-            state[SWMVars::V] +=
-                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::V), step);
-            state[SWMVars::ETA] +=
-                Integrate::<Ab3>::compute_inc(state_incs.take_var(SWMVars::ETA), step);
+            let mut inc = state_provider.get();
+
+            Integrate::<Ab3>::compute_inc(
+                rhs_evals.take_var(SWMVars::U),
+                step,
+                &mut inc[SWMVars::U],
+            );
+            Integrate::<Ab3>::compute_inc(
+                rhs_evals.take_var(SWMVars::V),
+                step,
+                &mut inc[SWMVars::V],
+            );
+            Integrate::<Ab3>::compute_inc(
+                rhs_evals.take_var(SWMVars::ETA),
+                step,
+                &mut inc[SWMVars::ETA],
+            );
+
+            state[SWMVars::U] += &inc[SWMVars::U];
+            state[SWMVars::V] += &inc[SWMVars::V];
+            state[SWMVars::ETA] += &inc[SWMVars::ETA];
         });
         let t = now.elapsed();
 
